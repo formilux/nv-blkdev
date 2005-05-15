@@ -1,0 +1,61 @@
+#!/bin/bash
+
+# This checks /proc/cmdline for the LAST 'flash=' statement, and considers
+# it as a partition number and mounts the next one into /var/persist, which
+# is created if it does not exist
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+PERSIST_DIR=/var/persist
+
+flash="$(cat /proc/cmdline)"
+if [ -n "${flash##*flash=*}" ]; then
+  echo "No flash device specified in /proc/cmdline."
+  exit 1
+fi
+flash=${flash##*flash=}
+flash=${flash%% *}
+[ -n "${flash##/dev/*}" ] && flash="/dev/$flash"
+
+partnum=${flash##*[^0-9]}
+radix=${flash%$partnum}
+
+newpart=$(( partnum + 1 ))
+persist=${radix}${newpart}
+
+# We first unmount $PERSIST_DIR if anything was mounted on it.
+# Then, we'll copy anything we find in it into the new FS.
+
+cd /
+umount -d $PERSIST_DIR >/dev/null 2>&1
+rmmod -r blkmtd   >/dev/null 2>&1
+
+modprobe mtdcore
+modprobe mtdblock >/dev/null 2>&1
+modprobe blkmtd device=$persist erasesz=64 >/dev/null 2>&1
+
+mtd=$(grep -wF $persist /proc/mtd)
+mtd=${mtd%%:*}
+mtd=${mtd##*[^0-9]}
+mtdblock=/dev/mtdblock${mtd}
+
+# trick: we enter the directory before we remount over it
+if mkdir -p $PERSIST_DIR 2>/dev/null; then
+  echo "Mounting $mtdblock($persist) on $PERSIST_DIR..."
+  cd $PERSIST_DIR
+  if mount -t jffs2 $mtdblock $PERSIST_DIR; then
+    # now we will copy everything currently in this directory over the
+    # new file-system.
+    cp -a . $PERSIST_DIR/
+    cd $PERSIST_DIR
+  else
+    echo "Error: mount failed."
+    rmmod -r blkmtd mtdblock
+    exit 1
+  fi
+else
+  echo "Error: cannot make directory $PERSIST_DIR."
+  rmmod -r blkmtd mtdblock
+  exit 1
+fi
+
+exit 0
