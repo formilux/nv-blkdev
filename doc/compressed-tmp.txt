@@ -1,0 +1,73 @@
+How to prepare a compactflash partition for use with jffs2 :
+
+# mknod /dev/mtdblock0 b 31 0
+# modprobe mtdblock
+# DEVICE=/dev/hde2
+#### fastest, simpliest and safest format :
+# tr '\000' '\377' </dev/zero | dd of=$DEVICE bs=64k
+# modprobe blkmtd device=$DEVICE erasesz=64
+# mount -t jffs2 /dev/mtdblock0 /mnt/floppy/
+#### on first mount, it can take several seconds because it
+#### will read then write the entire device if it had not
+#### been initialized earlier.
+
+It seems that if blkmtd module is not removed after umount, some data the size
+of the erase_size will not be stored. Big files will be truncated. Issuing
+the "sync" command does not change anything. And we should avoid to use the
+'sync' option as it multiplies the number of writes by about 4 !
+
+######
+
+How to prepare a file for use with jffs2 :
+
+# mknod /dev/mtdblock0 b 31 0
+# modprobe mtdblock
+# DEVICE=/dev/loop6
+# FILE=/mnt/disk/nv.img
+### build a 16 MB file
+# tr '\000' '\377' </dev/zero | dd of=$FILE bs=64k count=256
+# losetup $DEVICE $FILE
+# modprobe blkmtd device=$DEVICE erasesz=64
+# mount -t jffs2 /dev/mtdblock0 /mnt/floppy/
+#### on first mount, it can take several seconds because it
+#### will read then write the entire device if it had not
+#### been initialized earlier.
+
+
+Compression d'un /var ou /tmp avec JFFS2 sur MTDRAM :
+
+# We use the "mtdram" driver which initializes itself full of 0xFF.
+# The jffs2 file-system automatically formats the file-system (writes
+# its header) if it finds an empty file-system :
+
+# mknod /dev/mtdblock0 b 31 0
+# modprobe mtdblock
+# modprobe mtdram total_size=65536 erase_size=64
+# mount -t jffs2 /dev/mtdblock0 /mnt/floppy/
+
+
+### if we want to write data, it's a little bit more complicated :
+
+# modprobe mtdram total_size=65536 erase_size=64
+# modprobe mtdblock
+#### root directory MUST exist
+# mkdir -p /tmp/jffs2tmp
+# mkfs.jffs2 -e 65536 -p1 -d /tmp/jffs2tmp/ -o /dev/mtdblock0
+# mount -t jffs2 /dev/mtdblock0 /mnt/floppy/
+
+# df /mnt/floppy
+Filesystem           1K-blocks      Used Available Use% Mounted on
+/dev/mtdblock0           65536       324     65212   1% /mnt/floppy
+#
+# time cp /var/log/messages /mnt/floppy/
+real    0m0.522s
+user    0m0.000s
+sys     0m0.178s
+
+# ls -l /mnt/floppy/messages 
+-rw-r--r--  1 willy users 3606659 2005-04-06 22:20 /mnt/floppy/messages
+
+# df /mnt/floppy/
+Filesystem           1K-blocks      Used Available Use% Mounted on
+/dev/mtdblock0           65536      1312     64224   3% /mnt/floppy
+
