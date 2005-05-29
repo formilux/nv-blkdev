@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # This checks /proc/cmdline for the LAST 'flash=' statement, and considers
-# it as a partition number and mounts the next one into /var/persist, which
+# it as a partition number and mounts the next one into /nv, which
 # is created if it does not exist
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
-PERSIST_DIR=/var/persist
+PERSIST_DIR=/nv
 
 flash="$(cat /proc/cmdline)"
 if [ -n "${flash##*flash=*}" ]; then

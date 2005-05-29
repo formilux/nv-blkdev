@@ -196,6 +196,6 @@ touch /var/log/wtmp /var/run/utmp /var/log/lastlog
 #  echo "$dir is $s"
 #done
 
-/sbin/mount-persist
+/sbin/mount-nv
 echo "Base system done." | lcdtee
 
