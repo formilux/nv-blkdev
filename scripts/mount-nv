@@ -42,16 +42,33 @@ mtdblock=/dev/mtdblock${mtd}
 if mkdir -p $PERSIST_DIR 2>/dev/null; then
   echo "Mounting $mtdblock($persist) on $PERSIST_DIR..."
   cd $PERSIST_DIR
-  if mount -t jffs2 $mtdblock $PERSIST_DIR; then
-    # now we will copy everything currently in this directory over the
-    # new file-system.
-    cp -a . $PERSIST_DIR/
-    cd $PERSIST_DIR
-  else
-    echo "Error: mount failed."
-    rmmod -r blkmtd mtdblock
-    exit 1
+  retmsg=$(mount -t jffs2 $mtdblock $PERSIST_DIR 2>&1 ; ret="$?")
+  if [ "$ret" != "0" ] ; then
+    retmsg=$( echo "$retmsg" | grep "bad superblock")
+    if [ -n "$retmsg" ] ; then
+	if [ "$1" == "--format" ] ; then
+		tr '\000' '\377' </dev/zero | dd of=$mtdblock bs=64k 2>/dev/null
+		mount -t jffs2 $mtdblock $PERSIST_DIR
+		if [ "$?" != "0" ] ; then
+			echo "Unable to format."
+		fi
+	else
+		echo "Error: mount failed, nv seems not formatted use option --format."
+		rmmod -r blkmtd mtdblock
+		exit 1
+	fi
+    else
+	echo "Error: mount failed."
+	rmmod -r blkmtd mtdblock
+	exit 1
+    fi
   fi
+
+   # now we will copy everything currently in this directory over the
+   # new file-system.
+   cp -a . $PERSIST_DIR/
+   cd $PERSIST_DIR
+
 else
   echo "Error: cannot make directory $PERSIST_DIR."
   rmmod -r blkmtd mtdblock
