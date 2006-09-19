@@ -47,7 +47,7 @@ if mkdir -p $PERSIST_DIR 2>/dev/null; then
   if [ "$ret" != "0" ] ; then
     retmsg=$( echo "$retmsg" | grep "bad superblock")
     if [ -n "$retmsg" ] ; then
-	if [ "$1" == "--format" ] ; then
+	if [ "$1" = "--format" ] ; then
 		tr '\000' '\377' </dev/zero | dd of=$mtdblock bs=64k 2>/dev/null
 		mount -t jffs2 $mtdblock $PERSIST_DIR 2>/dev/null
 		if [ "$?" != "0" ] ; then
