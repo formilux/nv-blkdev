@@ -7,20 +7,53 @@
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 PERSIST_DIR=/nv
 
-flash="$(cat /proc/cmdline)"
-if [ -n "${flash##*flash=*}" ]; then
-  echo "No flash device specified in /proc/cmdline."
+# return the detected flash in $FLASH_SW
+find_flash() {
+  local flash
+
+  unset FLASH_MBR FLASH_HW FLASH_SW FLASH_NV
+
+  if [ -s /var/state/flash-layout.rc ]; then
+    . /var/state/flash-layout.rc
+  fi
+
+  if [ -z "$FLASH_SW" ]; then
+    if [ -x /sbin/mk-flash-layout ]; then
+      /sbin/mk-flash-layout ${MOUNTED_RO:+-k} ${QUIET:+-q}
+      if [ -s /var/state/flash-layout.rc ]; then
+        . /var/state/flash-layout.rc
+      fi
+    fi
+  fi
+
+  if [ -z "$FLASH_SW" ]; then
+    flash="$(cat /proc/cmdline)"
+    if [ -n "${flash##*flash=*}" ]; then
+      [ -z "$QUIET" ] && echo "No flash device specified in /proc/cmdline."
+      return 1
+    fi
+    flash=${flash##*flash=}
+    flash=${flash%% *}
+    [ -n "${flash##/dev/*}" ] && flash="/dev/$flash"
+    FLASH_SW=$flash
+  fi
+  return 0
+}
+
+if ! find_flash; then
+  echo "Flash not found."
   exit 1
 fi
-flash=${flash##*flash=}
-flash=${flash%% *}
-[ -n "${flash##/dev/*}" ] && flash="/dev/$flash"
 
-partnum=${flash##*[^0-9]}
-radix=${flash%$partnum}
+# Most often, mk-flash-layout will not detect the non-volatile partition.
+# The solution consists in derivating it from $FLASH_SW.
+if [ -z "$FLASH_NV" ]; then
+  partnum=${FLASH_SW##*[^0-9]}
+  radix=${FLASH_SW%$partnum}
 
-newpart=$(( partnum + 1 ))
-persist=${radix}${newpart}
+  newpart=$(( partnum + 1 ))
+  FLASH_NV=${radix}${newpart}
+fi
 
 # We first unmount $PERSIST_DIR if anything was mounted on it.
 # Then, we'll copy anything we find in it into the new FS.
@@ -31,16 +64,16 @@ rmmod -r blkmtd   >/dev/null 2>&1
 
 modprobe mtdcore
 modprobe mtdblock >/dev/null 2>&1
-modprobe blkmtd device=$persist erasesz=64 >/dev/null 2>&1
+modprobe blkmtd device=$FLASH_NV erasesz=64 >/dev/null 2>&1
 
-mtd=$(grep -wF $persist /proc/mtd)
+mtd=$(grep -wF $FLASH_NV /proc/mtd)
 mtd=${mtd%%:*}
 mtd=${mtd##*[^0-9]}
 mtdblock=/dev/mtdblock${mtd}
 
 # trick: we enter the directory before we remount over it
 if mkdir -p $PERSIST_DIR 2>/dev/null; then
-  echo "Mounting $mtdblock($persist) on $PERSIST_DIR..."
+  echo "Mounting $mtdblock($FLASH_NV) on $PERSIST_DIR..."
   cd $PERSIST_DIR
   retmsg=$(mount -t jffs2 $mtdblock $PERSIST_DIR 2>&1)
   ret="$?"
