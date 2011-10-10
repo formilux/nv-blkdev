@@ -60,11 +60,10 @@ fi
 
 cd /
 umount -d $PERSIST_DIR >/dev/null 2>&1
-rmmod -r blkmtd   >/dev/null 2>&1
+rmmod -r block2mtd   >/dev/null 2>&1
 
-modprobe mtdcore
 modprobe mtdblock >/dev/null 2>&1
-modprobe blkmtd device=$FLASH_NV erasesz=64 >/dev/null 2>&1
+modprobe block2mtd block2mtd=$FLASH_NV,65536 >/dev/null 2>&1
 
 mtd=$(grep -wF $FLASH_NV /proc/mtd)
 mtd=${mtd%%:*}
@@ -88,12 +87,12 @@ if mkdir -p $PERSIST_DIR 2>/dev/null; then
 		fi
 	else
 		echo "Error: mount failed, nv seems not formatted use option --format."
-		rmmod -r blkmtd mtdblock 2>/dev/null
+		rmmod -r block2mtd mtdblock 2>/dev/null
 		exit 1
 	fi
     else
 	echo "Error: mount failed."
-	rmmod -r blkmtd mtdblock 2>/dev/null
+	rmmod -r block2mtd mtdblock 2>/dev/null
 	exit 1
     fi
   fi
@@ -105,7 +104,7 @@ if mkdir -p $PERSIST_DIR 2>/dev/null; then
 
 else
   echo "Error: cannot make directory $PERSIST_DIR."
-  rmmod -r blkmtd mtdblock 2>/dev/null
+  rmmod -r block2mtd mtdblock 2>/dev/null
   exit 1
 fi
 
