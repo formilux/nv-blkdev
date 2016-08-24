@@ -86,7 +86,9 @@ if mkdir -p $PERSIST_DIR 2>/dev/null; then
 		tr '\000' '\377' </dev/zero | dd of=$mtdblock bs=64k 2>/dev/null
 		mount -t jffs2 $mtdblock $PERSIST_DIR 2>/dev/null
 		if [ "$?" != "0" ] ; then
-			echo "Unable to format."
+			echo "Error: unable to format $FLASH_NV using JFFS2."
+			modprobe -r block2mtd mtdblock 2>/dev/null
+			exit 1
 		fi
 	else
 		echo "Error: mount failed, nv seems not formatted use option --format."
