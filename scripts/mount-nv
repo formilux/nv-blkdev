@@ -11,6 +11,8 @@ PROC_FS=/proc/filesystems
 
 # set by '-q' to remove non-critical messages
 QUIET=
+# set by '-u' to only unmount the filesystem
+DO_UNMOUNT=
 # set by '-v' to increase verbosity level
 VERBOSE=
 # set by '--format' to force formating the partition
@@ -138,7 +140,7 @@ get_image_type() {
 # usage: $0 [$arg]
 usage() {
 	[ -n "$1" ] && echo "Unknown argument: $1" >&2
-	echo "Usage: ${0##*/} [-qv] [-t fs_type] [-p mntpoint] [--auto-format] [--format]" >&2
+	echo "Usage: ${0##*/} [-uqv] [-t fs_type] [-p mntpoint] [--auto-format] [--format]" >&2
 	exit 1
 }
 
@@ -149,6 +151,7 @@ usage() {
 while [ $# -gt 0 ]; do
 	[ -z "${1##-*}" ] || break
 	if [ "$1" = "-q" ]; then QUIET=1
+	elif [ "$1" = "-u" ]; then DO_UNMOUNT=1
 	elif [ "$1" = "-v" ]; then VERBOSE=1
 	elif [ "$1" = "--format" ]; then DO_FORMAT=1
 	elif [ "$1" = "--auto-format" ]; then AUTO_FORMAT=1
@@ -165,6 +168,13 @@ while [ $# -gt 0 ]; do
 	fi
 	shift
 done
+
+if [ -n "$DO_UNMOUNT" ]; then
+	cd /
+	umount -d $PERSIST_DIR >/dev/null 2>&1
+	modprobe -r block2mtd mtdblock >/dev/null 2>&1
+	exit 0
+fi
 
 if ! find_flash; then
 	echo "Error: flash not found."
