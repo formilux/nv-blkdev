@@ -26,6 +26,9 @@ find_flash() {
     fi
   fi
 
+  # " -t jffs2" may appear in the FLASH_SW variable for MTD devices
+  FLASH_SW="${FLASH_SW%% *}"
+
   if [ -z "$FLASH_SW" ]; then
     flash="$(cat /proc/cmdline)"
     if [ -n "${flash##*flash=*}" ]; then
