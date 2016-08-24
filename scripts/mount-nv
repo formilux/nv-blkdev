@@ -6,6 +6,23 @@
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 PERSIST_DIR=/nv
+PROC_PART=/proc/partitions
+PROC_FS=/proc/filesystems
+
+# set by '-q' to remove non-critical messages
+QUIET=
+# set by '-v' to increase verbosity level
+VERBOSE=
+# set by '--format' to force formating the partition
+DO_FORMAT=
+# set by '--auto-format' to format on mount errors only
+AUTO_FORMAT=
+# jffs2 is used by default when formating
+DEFAULT_FS_TYPE=jffs2
+
+FLASH_NV=
+MTDBLOCK=
+FS_TYPE=
 
 # return the detected flash in $FLASH_SW
 find_flash() {
@@ -43,74 +60,282 @@ find_flash() {
   return 0
 }
 
+# returns true if filesystem $1 is found in /proc/filesystems, otherwise false.
+is_fs_supported() {
+	grep -wq "$1\$" "$PROC_FS" 2>/dev/null
+}
+
+# Given a partition name in $1, return its size in blocks in $REPLY, and 0 as a
+# return value. If the partition is not found, returns 1 and REPLY is left
+# undefined. It doesn't matter whether $1 starts with "/dev/" or not.
+get_part_size() {
+	set -- "${1#/dev/}"
+	while read maj min size name rest; do
+		if [ -z "${maj##*[0-9]}" -a "$name" = "$1" ]; then
+			REPLY=$size
+			return 0
+		fi
+	done < $PROC_PART
+	return 1
+}
+
+
+# Returns in $REPLY the identified type of the image located on the device in
+# $1, and returns zero. If the device cannot be read, 1 is returned and REPLY
+# is left undefined. A read access is made to the device. Since identifying
+# ext2 requires at least 1082 bytes, we read all that at once.
+get_image_type() {
+	local dev=$1
+
+	REPLY=""
+	set -- $(od -v -An -tx1 -N1082 2>/dev/null < "$dev")
+	case "${1}${2}${3}${4}" in
+		"") return 1 ;;
+		ffffffff) REPLY="empty"    ;;
+		1f8b0800) REPLY="gzip"     ;;
+		fd377a58) REPLY="xz"       ;;
+		68737173) REPLY="squashfs" ;;
+		55424923) REPLY="ubi"      ;;
+		27051956) REPLY="uimage"   ;;
+		851901e0|1985e001) REPLY="jffs2" ;; # type=dirent
+		851902e0|1985e002) REPLY="jffs2" ;; # type=inode
+		85190320|19852003) REPLY="jffs2" ;; # type=clean
+		85190420|19852004) REPLY="jffs2" ;; # type=padding
+		85190620|19852006) REPLY="jffs2" ;; # type=summary
+		851908e0|1985e008) REPLY="jffs2" ;; # type=xattr
+		851909e0|1985e009) REPLY="jffs2" ;; # type=xref
+	esac
+
+	if [ "$REPLY" = "uimage" ]; then
+		if [ "${31}" = "02" ]; then
+			REPLY="ukernel"
+		elif [ "${31}" = "03" ]; then
+			REPLY="uinitrd"
+		fi
+	elif [ -z "$REPLY" ]; then
+		# test ext2 before MBR since it can lie on top of it
+		if [ "${1081}${1082}" = "53ef" ]; then
+			REPLY="ext2"
+		else
+			# 55aa = MBR or FAT.
+			# FAT has short jump + almost always 512 Bps, 2 FATs,
+			# type in [f0..ff]
+			case "${1}${3}${12}${13}${17}${22}${511}${512}" in
+				eb90000202f[089abcdef]55aa) REPLY="fat" ;;
+				e900000202f[089abcdef]55aa) REPLY="fat" ;;
+				e901000202f[089abcdef]55aa) REPLY="fat" ;;
+				*55aa) REPLY="mbr" ;;
+			esac
+		fi
+	fi
+
+	[ -n "$REPLY" ] && return 0
+
+	# not identified
+	return 1
+}
+
+# usage: $0 [$arg]
+usage() {
+	[ -n "$1" ] && echo "Unknown argument: $1" >&2
+	echo "Usage: ${0##*/} [-qv] [-t fs_type] [-p mntpoint] [--auto-format] [--format]" >&2
+	exit 1
+}
+
+#######################################################################
+# Main entry point : parses command line and iterates over try_mount()
+#######################################################################
+
+while [ $# -gt 0 ]; do
+	[ -z "${1##-*}" ] || break
+	if [ "$1" = "-q" ]; then QUIET=1
+	elif [ "$1" = "-v" ]; then VERBOSE=1
+	elif [ "$1" = "--format" ]; then DO_FORMAT=1
+	elif [ "$1" = "--auto-format" ]; then AUTO_FORMAT=1
+	elif [ "$1" = "-p" ]; then
+		[ $# -ge 2 ] || usage
+		PERSIST_DIR="$2"
+		shift
+	elif [ "$1" = "-t" ]; then
+		[ $# -ge 2 ] || usage
+		FS_TYPE="$2"
+		shift
+	else
+		usage "$1"
+	fi
+	shift
+done
+
 if ! find_flash; then
-  echo "Flash not found."
-  exit 1
+	echo "Error: flash not found."
+	exit 1
 fi
 
 # Most often, mk-flash-layout will not detect the non-volatile partition.
 # The solution consists in derivating it from $FLASH_SW.
 if [ -z "$FLASH_NV" ]; then
-  partnum=${FLASH_SW##*[^0-9]}
-  radix=${FLASH_SW%$partnum}
-
-  newpart=$(( partnum + 1 ))
-  FLASH_NV=${radix}${newpart}
+	partnum=${FLASH_SW##*[^0-9]}
+	radix=${FLASH_SW%$partnum}
+	newpart=$(( partnum + 1 ))
+	FLASH_NV=${radix}${newpart}
 fi
 
-# We first unmount $PERSIST_DIR if anything was mounted on it.
-# Then, we'll copy anything we find in it into the new FS.
+# the partition must really exist
+get_part_size $FLASH_NV || FLASH_NV=
+if [ -z "$FLASH_NV" ]; then
+	echo "Error: non-volatile partition couldn't be found."
+	exit 1
+fi
 
-cd /
-umount -d $PERSIST_DIR >/dev/null 2>&1
-modprobe -r block2mtd   >/dev/null 2>&1
+# Try to guess the erase size for mtdblock. The principle is simple, older
+# versions of this utility used to use a fixed 64kB erase size, but this
+# doesn't work on partitions which are not multiple of 64kB (typically 128
+# heads times 63 sectors). so now we factor the partition size to guess the
+# largest possible erase size (power of two), and cap it to 64kB to stay
+# compatible with older setups.
+ERASE_SZ=1024
+while [ $((REPLY/2*2)) = $REPLY ]; do
+	REPLY=$((REPLY/2))
+	ERASE_SZ=$((ERASE_SZ*2))
+done
+[ $ERASE_SZ -le 65536 ] || ERASE_SZ=65536
 
-modprobe mtdblock >/dev/null 2>&1
-modprobe block2mtd block2mtd=$FLASH_NV,65536 >/dev/null 2>&1
-
-mtd=$(grep -wF $FLASH_NV /proc/mtd)
-mtd=${mtd%%:*}
-mtd=${mtd##*[^0-9]}
-mtdblock=/dev/mtdblock${mtd}
-
-# trick: we enter the directory before we remount over it
-if mkdir -p $PERSIST_DIR 2>/dev/null; then
-  echo "Mounting $mtdblock($FLASH_NV) on $PERSIST_DIR..."
-  cd $PERSIST_DIR
-  retmsg=$(mount -t jffs2 $mtdblock $PERSIST_DIR 2>&1)
-  ret="$?"
-  if [ "$ret" != "0" ] ; then
-    retmsg=$( echo "$retmsg" | grep "\(read\|bad\) superblock")
-    if [ -n "$retmsg" ] ; then
-	if [ "$1" = "--format" ] ; then
-		tr '\000' '\377' </dev/zero | dd of=$mtdblock bs=64k 2>/dev/null
-		mount -t jffs2 $mtdblock $PERSIST_DIR 2>/dev/null
-		if [ "$?" != "0" ] ; then
-			echo "Error: unable to format $FLASH_NV using JFFS2."
-			modprobe -r block2mtd mtdblock 2>/dev/null
+# retrieve the filesystem type in $REPLY
+if [ -z "$FS_TYPE" ]; then
+	if ! get_image_type $FLASH_NV; then
+		echo "Found what looks like an unformated non-volatile partition on $FLASH_NV."
+		if [ -z "$DO_FORMAT$AUTO_FORMAT" ]; then
+			echo "You need to format it ($DEFAULT_FS_TYPE by default) and/or to specify its type using -t."
 			exit 1
 		fi
-	else
-		echo "Error: mount failed, nv seems not formatted use option --format."
+		# no need to try to mount before formating, let's save errors
+		DO_FORMAT=$AUTO_FORMAT
+		REPLY=$DEFAULT_FS_TYPE
+	fi
+	FS_TYPE=$REPLY
+fi
+
+# We first unmount $PERSIST_DIR if anything was mounted on it. We have no
+# other choice because block2mtd needs to be alone on it.
+cd /
+umount -d $PERSIST_DIR >/dev/null 2>&1
+modprobe -r block2mtd mtdblock >/dev/null 2>&1
+
+# for JFFS2 it is needed to emulate an MTD device from the block device
+# using block2mtd
+if [ "$FS_TYPE" = jffs2 ]; then
+	modprobe mtdblock >/dev/null 2>&1
+	modprobe block2mtd block2mtd=$FLASH_NV,$ERASE_SZ >/dev/null 2>&1
+
+	mtd=$(grep -wF $FLASH_NV /proc/mtd)
+	mtd=${mtd%%:*}
+	mtd=${mtd##*[^0-9]}
+	MTDBLOCK=/dev/mtdblock${mtd}
+	if [ -z "$mtd" -o ! -e "$MTDBLOCK" ]; then
+		echo "Error: failed to set up the MTD block device for JFFS2 on $FLASH_NV."
 		modprobe -r block2mtd mtdblock 2>/dev/null
 		exit 1
 	fi
-    else
-	echo "Error: mount failed."
-	modprobe -r block2mtd mtdblock 2>/dev/null
+elif [ "$FS_TYPE" != "ext2" -a "$FS_TYPE" != "fat" ]; then
+	echo "Error: unsupported filesystem $FS_TYPE type found on non-volatile partition $FLASH_NV."
 	exit 1
-    fi
-  fi
-
-   # now we will copy everything currently in this directory over the
-   # new file-system.
-   cp -a . $PERSIST_DIR/
-   cd $PERSIST_DIR
-
-else
-  echo "Error: cannot make directory $PERSIST_DIR."
-  modprobe -r block2mtd mtdblock 2>/dev/null
-  exit 1
 fi
+
+# Now this FS is ready to be mounted
+if ! mkdir -p $PERSIST_DIR 2>/dev/null; then
+	echo "Error: cannot make directory $PERSIST_DIR."
+	[ -z "$MTDBLOCK" ] || modprobe -r block2mtd mtdblock 2>/dev/null
+	exit 1
+fi
+
+# Trick: we enter the directory before we remount over it
+cd $PERSIST_DIR
+echo "Mounting $FLASH_NV on $PERSIST_DIR..."
+
+if [ "$FS_TYPE" = jffs2 ]; then
+	# Note: this one uses MTDBLOCK
+	if [ -z "$DO_FORMAT" ]; then
+		retmsg=$(mount -t $FS_TYPE $MTDBLOCK $PERSIST_DIR 2>&1)
+		ret="$?"
+	else
+		# never ever try to mount the FS if we intend to format it, as JFFS2 is
+		# very resilient and may mount even with tons of errors.
+		retmsg="bad superblock"
+		ret=1
+	fi
+	if [ "$ret" != "0" ] ; then
+		if ! is_fs_supported $FS_TYPE; then
+			echo "Error: filesystem type $FS_TYPE is not supported on this system. You may want to replace it using option --format."
+			[ -z "$MTDBLOCK" ] || modprobe -r block2mtd mtdblock 2>/dev/null
+			exit 1
+		fi
+
+		retmsg=$( echo "$retmsg" | grep "\(read\|bad\) superblock")
+		if [ -z "$retmsg" ] ; then
+			echo "Error: $FS_TYPE mount failed for $FLASH_NV."
+			modprobe -r block2mtd mtdblock 2>/dev/null
+			exit 1
+		fi
+
+		if [ -z "$DO_FORMAT$AUTO_FORMAT" ] ; then
+			echo "Error: $FS_TYPE mount failed, $FLASH_NV doesn't look formated, you may want to retry using option --format."
+			modprobe -r block2mtd mtdblock 2>/dev/null
+			exit 1
+		fi
+
+		# simulate a flash full of 0xFF
+		tr '\000' '\377' </dev/zero | dd of=$MTDBLOCK bs=$ERASE_SZ 2>/dev/null
+		if ! mount -t $FS_TYPE $MTDBLOCK $PERSIST_DIR 2>/dev/null; then
+			echo "Error: failed to format $FLASH_NV using $FS_TYPE."
+			modprobe -r block2mtd mtdblock 2>/dev/null
+			exit 1
+		fi
+	fi
+else
+	# This uses FLASH_NV directly. We first try with automatic filesystem
+	# detection, then by forcing its type if it fails. This avoids trying to
+	# mount ext{3,4} as ext2 for example.
+	if [ -z "$DO_FORMAT" ]; then
+		retmsg=$(mount $FLASH_NV $PERSIST_DIR 2>/dev/null || mount -t $FS_TYPE $FLASH_NV $PERSIST_DIR 2>&1)
+		ret="$?"
+	else
+		# don't try to mount the FS if we intend to format it
+		retmsg="bad superblock"
+		ret=1
+	fi
+	if [ "$ret" != "0" ] ; then
+		if ! is_fs_supported $FS_TYPE; then
+			echo "Error: filesystem type $FS_TYPE is not supported on this system. You may want to replace it using option --format."
+			exit 1
+		fi
+		retmsg=$( echo "$retmsg" | grep "\(read\|bad\) superblock")
+		if [ -z "$retmsg" ] ; then
+			echo "Error: $FS_TYPE mount failed for $FLASH_NV."
+			exit 1
+		fi
+
+		if [ -z "$DO_FORMAT$AUTO_FORMAT" ] ; then
+			echo "Error: $FS_TYPE mount failed, $FLASH_NV doesn't look formated, you may want to retry using option --format."
+			exit 1
+		fi
+
+		if [ $FS_TYPE = ext2 -o $FS_TYPE = ext3 -o $FS_TYPE = ext4 ]; then
+			mke2fs -t $FS_TYPE -q -s 1 -m 0 $FLASH_NV
+			tune2fs -c 0 -i 0 $FLASH_NV
+			if ! mount -t $FS_TYPE $FLASH_NV $PERSIST_DIR 2>/dev/null; then
+				echo "Error: failed to format $FLASH_NV using $FS_TYPE."
+				exit 1
+			fi
+		else
+			echo "Error: filesystem $FS_TYPE not handled when formating for non-volatile partition $FLASH_NV."
+			exit 1
+		fi
+	fi
+fi
+
+# Now we will copy everything currently in this directory over the
+# new file-system.
+cp -a . $PERSIST_DIR/
+cd $PERSIST_DIR
 
 exit 0
