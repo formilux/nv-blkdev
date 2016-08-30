@@ -226,7 +226,7 @@ if [ -z "$FS_TYPE" -o -n "$DO_IDENTIFY" ]; then
 			exit 1
 		fi
 		# no need to try to mount before formating, let's save errors
-		DO_FORMAT=$AUTO_FORMAT
+		DO_FORMAT=$DO_FORMAT$AUTO_FORMAT
 		REPLY=$DEFAULT_FS_TYPE
 	fi
 	FS_TYPE=$REPLY
