@@ -11,6 +11,8 @@ PROC_FS=/proc/filesystems
 
 # set by '-q' to remove non-critical messages
 QUIET=
+# set by '-i'
+DO_IDENTIFY=
 # set by '-u' to only unmount the filesystem
 DO_UNMOUNT=
 # set by '-v' to increase verbosity level
@@ -140,7 +142,7 @@ get_image_type() {
 # usage: $0 [$arg]
 usage() {
 	[ -n "$1" ] && echo "Unknown argument: $1" >&2
-	echo "Usage: ${0##*/} [-uqv] [-t fs_type] [-p mntpoint] [--auto-format] [--format]" >&2
+	echo "Usage: ${0##*/} [-iuqv] [-t fs_type] [-p mntpoint] [--auto-format] [--format]" >&2
 	exit 1
 }
 
@@ -151,6 +153,7 @@ usage() {
 while [ $# -gt 0 ]; do
 	[ -z "${1##-*}" ] || break
 	if [ "$1" = "-q" ]; then QUIET=1
+	elif [ "$1" = "-i" ]; then DO_IDENTIFY=1
 	elif [ "$1" = "-u" ]; then DO_UNMOUNT=1
 	elif [ "$1" = "-v" ]; then VERBOSE=1
 	elif [ "$1" = "--format" ]; then DO_FORMAT=1
@@ -211,8 +214,12 @@ done
 [ $ERASE_SZ -le 65536 ] || ERASE_SZ=65536
 
 # retrieve the filesystem type in $REPLY
-if [ -z "$FS_TYPE" ]; then
+if [ -z "$FS_TYPE" -o -n "$DO_IDENTIFY" ]; then
 	if ! get_image_type $FLASH_NV; then
+		if [ -n "$DO_IDENTIFY" ]; then
+			echo "none"
+			exit 1
+		fi
 		echo "Found what looks like an unformated non-volatile partition on $FLASH_NV."
 		if [ -z "$DO_FORMAT$AUTO_FORMAT" ]; then
 			echo "You need to format it ($DEFAULT_FS_TYPE by default) and/or to specify its type using -t."
@@ -223,6 +230,10 @@ if [ -z "$FS_TYPE" ]; then
 		REPLY=$DEFAULT_FS_TYPE
 	fi
 	FS_TYPE=$REPLY
+	if [ -n "$DO_IDENTIFY" ]; then
+		echo $FS_TYPE
+		exit 0
+	fi
 fi
 
 # We first unmount $PERSIST_DIR if anything was mounted on it. We have no
