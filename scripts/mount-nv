@@ -258,7 +258,7 @@ if [ "$FS_TYPE" = jffs2 ]; then
 		exit 1
 	fi
 elif [ "$FS_TYPE" != "ext2" -a "$FS_TYPE" != "fat" ]; then
-	echo "Error: unsupported filesystem $FS_TYPE type found on non-volatile partition $FLASH_NV."
+	echo "Error: unsupported filesystem type '$FS_TYPE' found on non-volatile partition $FLASH_NV."
 	exit 1
 fi
 
