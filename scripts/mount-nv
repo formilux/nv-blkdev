@@ -271,7 +271,12 @@ fi
 
 # Trick: we enter the directory before we remount over it
 cd $PERSIST_DIR
-echo "Mounting $FLASH_NV on $PERSIST_DIR..."
+
+if [ -z "$DO_FORMAT" ]; then
+	echo "Mounting $FLASH_NV on $PERSIST_DIR..."
+else
+	echo "Formating $FLASH_NV..."
+fi
 
 if [ "$FS_TYPE" = jffs2 ]; then
 	# Note: this one uses MTDBLOCK
@@ -306,6 +311,8 @@ if [ "$FS_TYPE" = jffs2 ]; then
 
 		# simulate a flash full of 0xFF
 		tr '\000' '\377' </dev/zero | dd of=$MTDBLOCK bs=$ERASE_SZ 2>/dev/null
+		sync
+		echo "Mounting $FLASH_NV on $PERSIST_DIR..."
 		if ! mount -t $FS_TYPE $MTDBLOCK $PERSIST_DIR 2>/dev/null; then
 			echo "Error: failed to format $FLASH_NV using $FS_TYPE."
 			modprobe -r block2mtd mtdblock 2>/dev/null
@@ -343,6 +350,8 @@ else
 		if [ $FS_TYPE = ext2 -o $FS_TYPE = ext3 -o $FS_TYPE = ext4 ]; then
 			mke2fs -t $FS_TYPE -q -s 1 -m 0 $FLASH_NV
 			tune2fs -c 0 -i 0 $FLASH_NV
+			sync
+			echo "Mounting $FLASH_NV on $PERSIST_DIR..."
 			if ! mount -t $FS_TYPE $FLASH_NV $PERSIST_DIR 2>/dev/null; then
 				echo "Error: failed to format $FLASH_NV using $FS_TYPE."
 				exit 1
