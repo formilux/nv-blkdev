@@ -145,6 +145,13 @@ get_image_type() {
 
 	REPLY=""
 	get_image_type_from_dump $(od -v -An -tx1 -N1082 2>/dev/null < "$dev")
+	if [ "$REPLY" = "empty" ]; then
+		# jffs2 can start anywhere, so we must skip all 0xFF and see
+		# what we have just after. In this case only 4 bytes are needed
+		# after all this. Otherwise it remains "empty".
+		get_image_type_from_dump $(tr -d '\377' < "$dev" | od -v -An -tx1 -N4 2>/dev/null)
+		[ "$REPLY" = "jffs2" ] || REPLY=empty
+	fi
 
 	[ -n "$REPLY" ] && return 0
 
