@@ -84,15 +84,12 @@ get_part_size() {
 }
 
 
-# Returns in $REPLY the identified type of the image located on the device in
-# $1, and returns zero. If the device cannot be read, 1 is returned and REPLY
-# is left undefined. A read access is made to the device. Since identifying
-# ext2 requires at least 1082 bytes, we read all that at once.
-get_image_type() {
-	local dev=$1
-
+# Returns in $REPLY the identified type based on the beginning of the image
+# consisting in hexadecimal bytes in "$*". Up to 1082 args may be needed! In
+# case of success, it stores the response in REPLY and returns zero. If the
+# image cannot be identified, 1 is returned and REPLY is left undefined.
+get_image_type_from_dump() {
 	REPLY=""
-	set -- $(od -v -An -tx1 -N1082 2>/dev/null < "$dev")
 	case "${1}${2}${3}${4}" in
 		"") return 1 ;;
 		ffffffff) REPLY="empty"    ;;
@@ -132,6 +129,22 @@ get_image_type() {
 			esac
 		fi
 	fi
+
+	[ -n "$REPLY" ] && return 0
+
+	# not identified
+	return 1
+}
+
+# Returns in $REPLY the identified type of the image located on the device in
+# $1, and returns zero. If the device cannot be read, 1 is returned and REPLY
+# is left undefined. A read access is made to the device. Since identifying
+# ext2 requires at least 1082 bytes, we read all that at once.
+get_image_type() {
+	local dev=$1
+
+	REPLY=""
+	get_image_type_from_dump $(od -v -An -tx1 -N1082 2>/dev/null < "$dev")
 
 	[ -n "$REPLY" ] && return 0
 
